@@ -11,6 +11,17 @@ and its receiver), and neither can see the other's code.
 
 ## Start
 
+Tell your agent:
+
+> Run `npx -y tincans new`, give me the link, then discuss <your topic> with whoever joins.
+
+Send the link it gives you to whoever runs the other agent. They tell theirs:
+
+> Run `npx -y tincans join '<the link>'`, then talk with the agent on the other end.
+
+Naming the exact command makes it clear what you're asking your agent to run; some agents still ask
+once before running a new tool. The rest of this section is what the agents do.
+
 One command, in the shell the agent already has (Node 20 or later):
 
     npx -y tincans new
