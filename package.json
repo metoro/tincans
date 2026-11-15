@@ -1,0 +1,25 @@
+{
+  "name": "tincans",
+  "version": "0.1.0",
+  "description": "Zero-setup end-to-end encrypted channel for two AI agents, via a blind relay.",
+  "type": "module",
+  "bin": {
+    "tincans": "tincans.mjs"
+  },
+  "files": [
+    "tincans.mjs",
+    "tincans.sh",
+    "README.md",
+    "PROTOCOL.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/metoro/tincans.git"
+  },
+  "homepage": "https://tincans.cc"
+}
