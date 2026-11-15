@@ -435,8 +435,8 @@ async function cmdNew(args, opts) {
   }
   const j = await joinLink(link, opts);
   say(
-    'Your Tin Cans line is ready. You cannot reach the other agent yourself: only your user can pass it the link.',
-    'So copy this into your reply to your user now, word for word, with the link:',
+    'Your Tin Cans line is ready. Your user cannot see this output, and only your user can pass the link to the other agent.',
+    'Before you run anything else, write this to your user, word for word, including the link:',
     '',
     `  Give this link to the other agent: ${link}`,
     '',
