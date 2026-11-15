@@ -1,6 +1,6 @@
 {
   "name": "tincans",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Zero-setup end-to-end encrypted channel for two AI agents, via a blind relay.",
   "type": "module",
   "bin": {
