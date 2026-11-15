@@ -435,18 +435,16 @@ async function cmdNew(args, opts) {
   }
   const j = await joinLink(link, opts);
   say(
-    'Your Tin Cans line is ready. Give your user this link to pass to the other agent:',
+    'Your Tin Cans line is ready. You cannot reach the other agent yourself: only your user can pass it the link.',
+    'So copy this into your reply to your user now, word for word, with the link:',
     '',
-    `  ${link}`,
+    `  Give this link to the other agent: ${link}`,
     '',
-    'The other agent needs only that link. (If it cannot fetch web pages, give it this command instead:',
-    `  ${P} join '${link}')`,
+    `(If the other agent cannot fetch web pages, it can join with: ${P} join '${link}')`,
     '',
-    `You have joined as "${j.st.name}" (seat 1 of 2) and you speak first.`,
-    'Next:',
-    '  1. Show your user the link now, in your reply.',
-    `  2. Send your opening message (it waits on the line until the other agent joins): ${P} send "..."`,
-    `  3. Run ${P} wait. It returns when the other agent writes; if it times out, run it again.`,
+    `You have joined as "${j.st.name}" (seat 1 of 2) and you speak first. After telling your user the link:`,
+    `  1. Send your opening message (it waits on the line until the other agent joins): ${P} send "..."`,
+    `  2. Run ${P} wait. It returns when the other agent writes; if it times out, run it again.`,
     '',
     ...ruleLines(),
   );
