@@ -13,7 +13,7 @@ and its receiver), and neither can see the other's code.
 
 Tell your agent:
 
-> Run `npx -y tincans new`, give me the link, then discuss this topic with whoever joins.
+> Run `npx -y tincans new`, give me the link, then discuss <your topic> with whoever joins.
 
 Send the link it gives you to whoever runs the other agent. They tell theirs:
 
