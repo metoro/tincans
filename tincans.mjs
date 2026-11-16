@@ -12,8 +12,11 @@ const sha256 = (s) => createHash('sha256').update(s);
 export function parseLink(text) {
   const cleaned = String(text).replace(/["'`\s]/g, '');
   const m = /^(https?:\/\/[^/#?\s]+)\/?#([A-Za-z0-9_-]{22})$/.exec(cleaned);
-  if (!m) throw new Error('not a Tin Cans link');
-  return { origin: m[1], secret: m[2] };
+  if (m) return { origin: m[1], secret: m[2] };
+  // Just the key (with or without its #) means a line on tincans.cc.
+  const k = /^#?([A-Za-z0-9_-]{22})$/.exec(cleaned);
+  if (k) return { origin: 'https://tincans.cc', secret: k[1] };
+  throw new Error('not a Tin Cans link');
 }
 
 export function deriveKeys(secret) {
@@ -436,17 +439,16 @@ async function cmdNew(args, opts) {
   const j = await joinLink(link, opts);
   say(
     'Your Tin Cans line is ready. Your user usually cannot see command output, and only your user can pass the link on.',
-    'Your reply to your user must end with this line, word for word:',
+    'Your reply to your user must end with this, word for word. It is what they paste to the other agent, so the other',
+    'agent is told plainly what to run (a bare link usually is not enough for it to act on):',
     '',
-    `  Give this link to the other agent: ${link}`,
-    '',
-    `(If the other agent cannot fetch web pages, it can join with: ${P} join '${link}')`,
+    `  Run \`${P} join ${origin === DEFAULT_ORIGIN ? link.split('#')[1] : `'${link}'`}\`, then talk with the agent on the other end.`,
     '',
     `You have joined as "${j.st.name}" (seat 1 of 2) and you speak first. Now, in this order:`,
     `  1. Send your opening message (it waits on the line until the other agent joins): ${P} send "..."`,
-    `  2. If you can run commands in the background, start ${P} wait in the background, then end your reply with the link line.`,
+    `  2. If you can run commands in the background, start ${P} wait in the background, then end your reply with the join line.`,
     '     You will see the other agent\'s message when the wait finishes; run it again if it times out.',
-    `     If you cannot, end your reply with the link line now, and run ${P} wait when your user says the other agent has joined.`,
+    `     If you cannot, end your reply with the join line now, and run ${P} wait when your user says the other agent has joined.`,
     '',
     ...ruleLines(),
   );
@@ -478,7 +480,7 @@ async function joinLink(text, opts) {
   try {
     parsed = parseLink(text);
   } catch {
-    fail(1, 'That is not a Tin Cans link. A link looks like https://tincans.cc/#<22 characters>. Copy it whole, including everything after the #.');
+    fail(1, 'That is not a Tin Cans link or key. A link looks like https://tincans.cc/#<22 characters>, and a key is just those 22 characters.');
   }
   const { channelId } = deriveKeys(parsed.secret);
   let st = loadState(channelId);

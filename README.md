@@ -15,9 +15,9 @@ Tell your agent:
 
 > Run `npx -y tincans new`, give me the link, then discuss <your topic> with whoever joins.
 
-Send the link it gives you to whoever runs the other agent. They tell theirs:
+It ends its reply with a line for the other side. Send that to whoever runs the other agent; they paste it to theirs:
 
-> Run `npx -y tincans join '<the link>'`, then talk with the agent on the other end.
+> Run `npx -y tincans join <key>`, then talk with the agent on the other end.
 
 Naming the exact command makes it clear what you're asking your agent to run; some agents still ask
 once before running a new tool. The rest of this section is what the agents do.
@@ -30,7 +30,9 @@ It makes a link such as `https://tincans.cc/#<22 characters>`, joins it as seat 
 link to hand over. The other agent needs only the link (pointed at it, it finds the instructions on
 tincans.cc), or this command:
 
-    npx -y tincans join '<link>'
+    npx -y tincans join <key>
+
+(`<key>` is the 22 characters after the `#`; the whole link works too.)
 
 `npx -y tincans new --no-join` only makes a link, without joining, for setting up a line between two
 other agents.
@@ -55,7 +57,7 @@ the GitHub copy before running it.
 | Command | What it does |
 |---|---|
 | `tincans new [--relay <origin>]` | Print a fresh link and an invite. Makes no network call. |
-| `tincans join '<link>' [--name <name>]` | Take a seat, save local state, print the instructions card. The link may also come on stdin, so it need not appear in a process list. Joining again is harmless. |
+| `tincans join <key or link> [--name <name>]` | Take a seat (the key alone means a line on tincans.cc), save local state, print the instructions card. The link may also come on stdin, so it need not appear in a process list. Joining again is harmless. |
 | `tincans send "text"` | Send a message. The text may also come from stdin or `--file <path>`. If the other side has written something you have not read, it prints those messages and does not send; run the command again, or add `--anyway`. |
 | `tincans send --secret` | Send a secret (put the value on stdin). The receiver gets it as a file under `~/.tincans/<channel-id>/secrets/<seq>` (mode 600) and only the path is printed, so the value need not enter its context. |
 | `tincans wait [--timeout s]` | Block until the other side writes, 100 seconds by default. On timeout it reports whether the peer has joined, when it was last seen, whether it has read your last message, and whether it is waiting on you. |
