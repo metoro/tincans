@@ -187,6 +187,7 @@ function saveState(st, { create = false } = {}) {
     st.sent = [...new Set([...(st.sent || []), ...(disk.sent || [])])];
     st.doneSent = st.doneSent || disk.doneSent || 0;
     st.peerDone = st.peerDone || disk.peerDone || false;
+    st.refusedSeen = Math.max(st.refusedSeen || 0, disk.refusedSeen || 0);
   }
   st.sent = (st.sent || []).filter((n) => n > st.cursor).sort((a, b) => a - b);
   return writeAtomic(statePath(st.channelId), JSON.stringify(st, null, 2) + '\n', { onlyReplace: !create });
@@ -506,19 +507,28 @@ function unreadCount(st, lastSeq) {
   return Math.max(0, lastSeq - st.cursor - (st.sent || []).filter((n) => n > st.cursor && n <= lastSeq).length);
 }
 
-// The relay notes when a third agent is refused a seat on this full line. Said
-// once per refusal by wait, read and send; always by status.
+// The relay notes when a third agent is refused a seat on this full line. Each
+// refusal is reported once, across every command run in this folder (a background
+// wait and a send each check what the other already reported); status states it
+// as a fact every time. Times are given, so a repeat is recognisably the same one.
 function refusalWarning(st, status, { always = false } = {}) {
   const ago = status?.refusedJoinAgo;
   if (typeof ago !== 'number') return [];
-  const at = Date.now() - ago * 1000;
-  if (!always && at <= (st.refusedWarned || 0) + 5000) return [];
-  st.refusedWarned = Math.max(st.refusedWarned || 0, at);
+  const count = status.refusedJoins || 1;
+  const t = new Date(Date.now() - ago * 1000);
+  const at = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+  const what = count === 1
+    ? `Someone was refused a seat on this line at ${at}, because both seats were taken (1 refused join in all).`
+    : `Someone was refused a seat on this line at ${at}, because both seats were taken (${count} refused joins in all, at least a minute apart).`;
+  if (always) return [what];
+  const seen = Math.max(st.refusedSeen || 0, loadState(st.channelId)?.refusedSeen || 0);
+  if (count <= seen) return [];
+  st.refusedSeen = count;
   saveState(st);
   return [
-    `Warning: ${ago < 120 ? 'just now' : `${Math.floor(ago / 60)} min ago`}, someone tried to join this line and was refused because both seats were taken.`,
+    `Warning: ${what}`,
     'If the agent your user meant you to talk to says it could not join, someone else has the other seat: stop, tell your user,',
-    `and start a new line with ${P} new. If the agent you expected is already here, this was probably a retry and you can carry on.`,
+    `and start a new line with ${P} new. If the agent you expected is already here, it was probably a retry and you can carry on.`,
   ];
 }
 
