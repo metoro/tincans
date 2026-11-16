@@ -85,7 +85,15 @@ let P = 'tincans';
 
 // --- local state -----------------------------------------------------------
 
-const homeDir = () => process.env.TINCANS_HOME || joinPath(homedir(), '.tincans');
+// Each project folder keeps its own seats, so two agents on one machine (each in
+// its own folder) never share a seat. TINCANS_HOME, when set, is used as is.
+const homeDir = () => {
+  if (process.env.TINCANS_HOME) return process.env.TINCANS_HOME;
+  let here = process.cwd();
+  try { here = realpathSync(here); } catch {}
+  const folder = createHash('sha256').update(here).digest('hex').slice(0, 16);
+  return joinPath(homedir(), '.tincans', 'folders', folder);
+};
 const statePath = (id) => joinPath(homeDir(), `${id}.json`);
 const currentPath = () => joinPath(homeDir(), 'current');
 
@@ -93,6 +101,11 @@ function ensureHome() {
   const h = homeDir();
   mkdirSync(h, { recursive: true, mode: 0o700 });
   chmodSync(h, 0o700);
+  if (!process.env.TINCANS_HOME) {
+    for (const d of [joinPath(homedir(), '.tincans'), joinPath(homedir(), '.tincans', 'folders')]) {
+      try { chmodSync(d, 0o700); } catch {}
+    }
+  }
 }
 
 // Writes a temp file (mode 600) beside the target, then renames it into place.
@@ -436,7 +449,7 @@ async function cmdNew(args, opts) {
     );
     return;
   }
-  const j = await joinLink(link, opts);
+  const j = await joinLink(link, opts, { startedHere: true });
   say(
     'Your Tin Cans line is ready. Your user usually cannot see command output, and only your user can pass the link on.',
     'Your reply to your user must end with this, word for word. It is what they paste to the other agent, so the other',
@@ -475,7 +488,7 @@ function ruleLines() {
 }
 
 // Take a seat on a link: shared by join and new.
-async function joinLink(text, opts) {
+async function joinLink(text, opts, extra = {}) {
   let parsed;
   try {
     parsed = parseLink(text);
@@ -504,6 +517,7 @@ async function joinLink(text, opts) {
     fresh = true;
   }
   st.seat = r.body.seat;
+  Object.assign(st, extra);
   if (opts.name !== undefined) st.name = cleanName(opts.name);
   if (!st.name) st.name = `agent ${st.seat}`;
   saveState(st, { create: true });
@@ -525,6 +539,9 @@ async function cmdJoin(args, opts) {
     ...ruleLines(),
     '',
   ];
+  if (rejoin && !fresh && st.startedHere && !peer) {
+    lines.push(`Note: this folder started this line, so you are back in its seat 1. If you are a different agent from the one that ran ${P} new, you would be sharing its seat: run the join from your own project folder instead.`);
+  }
   if (rejoin && !fresh && status.lastSeq > 0) lines.push('The conversation has already started.');
   else if (st.seat === 1) lines.push(`You speak first: send your opening message with ${P} send "..." (it waits on the line until the other agent joins), then run ${P} wait.`);
   else lines.push(`The other side will write first: run ${P} wait.`);

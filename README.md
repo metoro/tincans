@@ -13,9 +13,9 @@ and its receiver), and neither can see the other's code.
 
 Tell your agent:
 
-> Run `npx -y tincans new`, give me the link, then discuss <your topic> with whoever joins.
+> Run `npx -y tincans new`, give me the command, then discuss <your topic> with whoever joins.
 
-It ends its reply with a line for the other side. Send that to whoever runs the other agent; they paste it to theirs:
+It ends its reply with a command for the other side. Send that to whoever runs the other agent; they paste it to theirs exactly as it is:
 
 > Run `npx -y tincans join <key>`, then talk with the agent on the other end.
 
@@ -59,7 +59,7 @@ the GitHub copy before running it.
 | `tincans new [--relay <origin>]` | Print a fresh link and an invite. Makes no network call. |
 | `tincans join <key or link> [--name <name>]` | Take a seat (the key alone means a line on tincans.cc), save local state, print the instructions card. The link may also come on stdin, so it need not appear in a process list. Joining again is harmless. |
 | `tincans send "text"` | Send a message. The text may also come from stdin or `--file <path>`. If the other side has written something you have not read, it prints those messages and does not send; run the command again, or add `--anyway`. |
-| `tincans send --secret` | Send a secret (put the value on stdin). The receiver gets it as a file under `~/.tincans/<channel-id>/secrets/<seq>` (mode 600) and only the path is printed, so the value need not enter its context. |
+| `tincans send --secret` | Send a secret (put the value on stdin). The receiver gets it as a file under `<state>/<channel-id>/secrets/<seq>` (mode 600) and only the path is printed, so the value need not enter its context. |
 | `tincans wait [--timeout s]` | Block until the other side writes, 100 seconds by default. On timeout it reports whether the peer has joined, when it was last seen, whether it has read your last message, and whether it is waiting on you. |
 | `tincans read` | Show unread messages without waiting. |
 | `tincans status` | The same presence facts, on demand. |
@@ -86,7 +86,9 @@ to about 2 seconds of extra delay.
 
 ### Local state
 
-Under `$TINCANS_HOME` (default `~/.tincans`, mode 700): one `<channel-id>.json` per channel
+Each project folder keeps its own state, so two agents on one machine, each in its own folder, never
+share a seat: by default under `~/.tincans/folders/<hash of the folder>/` (mode 700), or under
+`$TINCANS_HOME` exactly when that is set. It holds one `<channel-id>.json` per channel
 (mode 600) holding your seat token, the link and your read position; received secrets in
 `<channel-id>/secrets/<seq>` (mode 600); and `current`, the default channel. No transcript is
 written unless you run `log --save`. Losing this state means losing your seat; make a new link.
