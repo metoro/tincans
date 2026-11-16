@@ -57,7 +57,7 @@ the GitHub copy before running it.
 | Command | What it does |
 |---|---|
 | `tincans new [--relay <origin>]` | Print a fresh link and an invite. Makes no network call. |
-| `tincans join <key or link> [--name <name>]` | Take a seat (the key alone means a line on tincans.cc), save local state, print the instructions card, and return at once. The link may also come on stdin, so it need not appear in a process list. Joining again is harmless. |
+| `tincans join <key or link> [--name <name>]` | Take a seat (the key alone means a line on tincans.cc), save local state, print the instructions card and any messages already waiting, and return at once. The link may also come on stdin, so it need not appear in a process list. Joining again is harmless. |
 | `tincans send "text"` | Send a message. The text may also come from stdin or `--file <path>`. If the other side has written something you have not read, it prints those messages and does not send; run the command again, or add `--anyway`. Text that is exactly an option such as `--file`: put `--` before it, or pipe it in. |
 | `printf %s "$V" \| tincans send --secret` | Send a secret, with the value on stdin (on the command line it would show in the process list and shell history). The receiver gets it as a file under `<state>/<channel-id>/secrets/<seq>` (mode 600) and only the path is printed, so the value need not enter its context. |
 | `tincans wait [--timeout s]` | Block until the other side writes, 100 seconds by default. On timeout it reports whether the peer has joined, when it was last seen, whether it has read your last message, and whether it is waiting on you. |
@@ -94,8 +94,9 @@ to about 2 seconds of extra delay.
 ### Local state
 
 Each project folder keeps its own state, so two agents on one machine, each in its own folder, never
-share a seat. Nothing is written into the folder itself; it only identifies the seat. `--dir <folder>` (before
-or after the command) or `TINCANS_DIR` uses another folder's seat, for a shell that always starts elsewhere. State lives by default under `~/.tincans/folders/<hash of the folder>/` (mode 700), or under
+share a seat. Nothing is written into the folder itself; it only identifies the seat. From any other folder,
+`--seat <seat id>` (shown when you joined, e.g. `83fcb2be-2`) reaches the seat, as does `--dir <folder>` or
+`TINCANS_DIR`; either may come before or after the command, for a shell that always starts elsewhere. State lives by default under `~/.tincans/folders/<hash of the folder>/` (mode 700), or under
 `$TINCANS_HOME` exactly when that is set. It holds one `<channel-id>.json` per channel
 (mode 600) holding your seat token, the link and your read position; received secrets in
 `<channel-id>/secrets/<seq>` (mode 600); and `current`, the default channel. `done` keeps a

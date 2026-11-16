@@ -115,8 +115,10 @@ const hereDir = () => {
 };
 const shellQuote = (x) => `'${String(x).replace(/'/g, `'\\''`)}'`;
 const foldersRoot = () => joinPath(homedir(), '.tincans', 'folders');
+let SEAT_HOME = null; // set by --seat: the state folder that holds that seat
 const homeDir = () => {
   if (process.env.TINCANS_HOME) return process.env.TINCANS_HOME;
+  if (SEAT_HOME) return SEAT_HOME;
   const folder = createHash('sha256').update(hereDir()).digest('hex').slice(0, 16);
   return joinPath(foldersRoot(), folder);
 };
@@ -141,6 +143,53 @@ function otherRecentLines() {
   }
   return n;
 }
+// --seat <id>: the state folder holding the one channel whose id starts with it,
+// searched across every project folder on this machine (or TINCANS_HOME).
+// A seat id is the channel id's first characters plus the seat number, e.g.
+// 83fcb2be-2: both seats of a line share the channel id, and two agents on one
+// machine may hold one each.
+const seatIdOf = (st) => `${st.channelId.slice(0, 8)}-${st.seat}`;
+function findSeat(prefix) {
+  const m = String(prefix).trim().toLowerCase().match(/^([0-9a-f]{6,32})(?:-([12]))?$/);
+  if (!m) fail(1, `--seat takes the seat id shown when you joined, e.g. --seat 83fcb2be-2.`);
+  const [, p, n] = m;
+  const roots = process.env.TINCANS_HOME ? [process.env.TINCANS_HOME] : (() => {
+    try { return readdirSync(foldersRoot()).map((d) => joinPath(foldersRoot(), d)); } catch { return []; }
+  })();
+  const hits = [];
+  for (const r of roots) {
+    let files = [];
+    try { files = readdirSync(r); } catch { continue; }
+    for (const f of files) {
+      if (!/^[0-9a-f]{32}\.json$/.test(f) || !f.startsWith(p)) continue;
+      if (n) {
+        try { if (String(JSON.parse(readFileSync(joinPath(r, f), 'utf8')).seat) !== n) continue; } catch { continue; }
+      }
+      hits.push({ home: r, id: f.slice(0, 32) });
+    }
+  }
+  if (!hits.length) {
+    const note = closingNoteAnywhere(p, roots);
+    fail(note ? 5 : 1, note ? noteText(note) : `No seat on this machine matches ${prefix}. Check the seat id shown when you joined, or join with ${P} join '<link>'.`);
+  }
+  if (hits.length > 1) fail(1, `More than one seat on this machine matches ${prefix}: give the full seat id shown when you joined (e.g. ${p}-1 or ${p}-2).`);
+  return hits[0];
+}
+
+function closingNoteAnywhere(p, roots) {
+  for (const r of roots) {
+    let files = [];
+    try { files = readdirSync(joinPath(r, 'ended')); } catch { continue; }
+    const f = files.find((x) => x.startsWith(p) && x.endsWith('.json'));
+    if (!f) continue;
+    try {
+      const n = JSON.parse(readFileSync(joinPath(r, 'ended', f), 'utf8'));
+      if (Date.now() - n.at <= NOTE_KEEP_MS) return n;
+    } catch {}
+  }
+  return null;
+}
+
 const statePath = (id) => joinPath(homeDir(), `${id}.json`);
 const currentPath = () => joinPath(homeDir(), 'current');
 
@@ -625,12 +674,12 @@ async function cmdNew(args, opts) {
     `  2. If you can run commands in the background, start ${listen()} in the background, then end your reply with the join line.`,
     `     If you cannot, end your reply with the join line now, and run ${P} wait when your user says the other agent has joined.`,
     '',
-    ...ruleLines(),
+    ...ruleLines(j.st),
   );
 }
 
 // Everything an agent should know about using a line, printed when it joins.
-function ruleLines() {
+function ruleLines(st) {
   return [
     'A private line to one other AI agent, set up because your user asked for it. It is end-to-end encrypted: the relay',
     'sees only ciphertext, while everything you send and receive appears in your output, so your user can read it all.',
@@ -645,12 +694,11 @@ function ruleLines() {
     `If you cannot run it in the background, wait in the foreground instead (${P} wait, ${DEFAULT_WAIT} s at a time).`,
     'Messages wait on the relay until read, so nothing is lost while no wait is running.',
     '',
-    `Your seat belongs to this folder: ${hereDir()}`,
-    `Nothing is written into it (your seat and received secrets are kept in ${process.env.TINCANS_HOME ? homeDir() : '~/.tincans/folders/'}).`,
+    `Your seat is ${seatIdOf(st)}, tied to this folder: ${hereDir()}`,
+    `Nothing is written into the folder (your seat and received secrets are kept in ${process.env.TINCANS_HOME ? homeDir() : '~/.tincans/folders/'}).`,
     ...(DIR ? [] : [
-      'If your shell starts in a different folder for each command, add --dir to every command instead of cd, e.g.',
-      `  ${P} --dir ${shellQuote(hereDir())} wait`,
-      `or set TINCANS_DIR=${shellQuote(hereDir())}.`,
+      'If your shell starts in a different folder for each command, add --seat to every command instead of cd:',
+      `  ${BASE_P} --seat ${seatIdOf(st)} wait`,
     ]),
     '',
     'Commands:',
@@ -713,7 +761,7 @@ async function cmdJoin(args, opts) {
     ...(fresh ? [`The line you were on before has ended, so this link started a new line. Your old messages and received secrets for it were deleted.`] : []),
     `${fresh ? 'Joined the new line on' : rejoin ? 'Rejoined' : 'Joined'} Tin Cans channel ${st.channelId.slice(0, 8)} as "${st.name}" (seat ${st.seat} of 2). ${peer ? 'The other side is here.' : 'The other side has not joined yet.'}`,
     '',
-    ...ruleLines(),
+    ...ruleLines(st),
     '',
   ];
   if (rejoin && !fresh && st.startedHere && !peer) {
@@ -721,10 +769,14 @@ async function cmdJoin(args, opts) {
   }
   if (rejoin && !fresh && status.lastSeq > 0) lines.push('The conversation has already started.');
   else if (st.seat === 1) lines.push(`You speak first: send your opening message with ${P} send "..." (it waits on the line until the other agent joins), then keep listening as above.`);
-  else if (unread) lines.push(`The other side has already written: read it with ${P} read, then reply.`);
-  else lines.push(`The other side will write first: keep listening as above, or run ${P} wait.`);
-  if (unread && (st.seat === 1 || (rejoin && !fresh && status.lastSeq > 0))) lines.push(`You have ${unread} unread message${unread === 1 ? '' : 's'}: run ${P} read.`);
+  else if (!unread) lines.push(`The other side will write first: keep listening as above, or run ${P} wait.`);
+  if (unread) lines.push(`The other side has already written. Its ${unread === 1 ? 'message' : `${unread} messages`}:`);
   say(...lines);
+  // Show what is waiting now, rather than send the agent off to run read.
+  if (unread) {
+    const { incoming } = await pull(st, 0);
+    if (incoming.length) printMessages(incoming);
+  }
 }
 
 function tooBig(size) {
@@ -996,14 +1048,14 @@ async function cmdStatus(args, opts) {
 const CHANNEL = { type: 'string' };
 // Command table: add an entry here to add a command.
 const COMMANDS = {
-  new: { options: { dir: { type: 'string' }, relay: { type: 'string' }, name: { type: 'string' }, 'no-join': { type: 'boolean' } }, run: cmdNew },
-  join: { options: { dir: { type: 'string' }, name: { type: 'string' } }, run: cmdJoin },
-  send: { text: true, options: { dir: { type: 'string' }, file: { type: 'string' }, secret: { type: 'boolean' }, anyway: { type: 'boolean' }, channel: CHANNEL }, run: cmdSend },
-  wait: { options: { dir: { type: 'string' }, timeout: { type: 'string' }, channel: CHANNEL }, run: cmdWait },
-  read: { options: { dir: { type: 'string' }, channel: CHANNEL }, run: cmdRead },
-  status: { options: { dir: { type: 'string' }, channel: CHANNEL }, run: cmdStatus },
-  done: { text: true, options: { dir: { type: 'string' }, anyway: { type: 'boolean' }, channel: CHANNEL }, run: cmdDone },
-  log: { options: { dir: { type: 'string' }, save: { type: 'string' }, follow: { type: 'boolean' }, channel: CHANNEL }, run: cmdLog },
+  new: { options: { dir: { type: 'string' }, seat: { type: 'string' }, relay: { type: 'string' }, name: { type: 'string' }, 'no-join': { type: 'boolean' } }, run: cmdNew },
+  join: { options: { dir: { type: 'string' }, seat: { type: 'string' }, name: { type: 'string' } }, run: cmdJoin },
+  send: { text: true, options: { dir: { type: 'string' }, file: { type: 'string' }, secret: { type: 'boolean' }, anyway: { type: 'boolean' }, channel: CHANNEL, seat: { type: 'string' } }, run: cmdSend },
+  wait: { options: { dir: { type: 'string' }, timeout: { type: 'string' }, channel: CHANNEL, seat: { type: 'string' } }, run: cmdWait },
+  read: { options: { dir: { type: 'string' }, channel: CHANNEL, seat: { type: 'string' } }, run: cmdRead },
+  status: { options: { dir: { type: 'string' }, channel: CHANNEL, seat: { type: 'string' } }, run: cmdStatus },
+  done: { text: true, options: { dir: { type: 'string' }, anyway: { type: 'boolean' }, channel: CHANNEL, seat: { type: 'string' } }, run: cmdDone },
+  log: { options: { dir: { type: 'string' }, save: { type: 'string' }, follow: { type: 'boolean' }, channel: CHANNEL, seat: { type: 'string' } }, run: cmdLog },
 };
 
 const usage = () => [
@@ -1021,8 +1073,9 @@ const usage = () => [
   `  ${P} log [--save p] [--follow]   the whole conversation (secrets masked)`,
   '',
   'Channel commands take --channel <id-prefix> to pick one of several joined channels.',
-  'Each folder has its own line. --dir <folder> (before or after the command) or TINCANS_DIR uses that folder\'s line',
-  'instead of the current one; nothing is written into the folder.',
+  'Each folder has its own line; nothing is written into the folder. From any other folder, reach your seat with',
+  '--seat <seat id> (shown when you joined, e.g. 83fcb2be-2), or --dir <folder> / TINCANS_DIR. Either may come',
+  'before or after the command.',
   'Text that is exactly an option (e.g. --file): put -- before it, or pipe it in.',
   'Messages are framed by lines with a random tag, new every time, that text inside a message cannot fake.',
   '',
@@ -1053,13 +1106,17 @@ function textAfterOptions(args, options) {
 export async function main(argv = process.argv.slice(2)) {
   P = BASE_P = commandPrefix();
   DIR = null;
-  // --dir <folder> may come before the command (it is then part of every command
-  // printed) or among the command's options.
+  SEAT_HOME = null;
+  // --dir <folder> and --seat <id> may come before the command (they are then part
+  // of every command printed) or among the command's options.
   argv = [...argv];
   let dirFlag = null;
-  while (argv[0] === '--dir' || argv[0]?.startsWith('--dir=')) {
-    const a = argv.shift();
-    dirFlag = a.includes('=') ? a.slice(6) : argv.shift();
+  let seatFlag = null;
+  for (;;) {
+    const a = argv[0];
+    if (a === '--dir' || a?.startsWith('--dir=')) { argv.shift(); dirFlag = a.includes('=') ? a.slice(6) : argv.shift(); }
+    else if (a === '--seat' || a?.startsWith('--seat=')) { argv.shift(); seatFlag = a.includes('=') ? a.slice(7) : argv.shift(); }
+    else break;
   }
   const [name, ...rest] = argv;
   if (name === 'help' || name === '--help' || name === '-h') {
@@ -1075,6 +1132,15 @@ export async function main(argv = process.argv.slice(2)) {
     fail(1, `${e.message}\nText that starts with "-" goes after --, e.g. ${P} send -- "-1 is the answer".\n\n${usage()}`);
   }
   dirFlag = parsed.values.dir ?? dirFlag;
+  seatFlag = parsed.values.seat ?? seatFlag;
+  if (seatFlag !== null) {
+    if (!Object.hasOwn(cmd.options, 'channel')) fail(1, `--seat is for commands on a line you have joined (send, wait, read, status, done, log), not ${name}.`);
+    if (dirFlag !== null) fail(1, 'Give --seat or --dir, not both.');
+    const hit = findSeat(seatFlag);
+    SEAT_HOME = hit.home;
+    parsed.values.channel = hit.id;
+    P = `${P} --seat ${seatIdOf(loadState(hit.id))}`;
+  }
   if (dirFlag !== null) {
     if (!dirFlag || !existsSync(dirFlag)) fail(1, `--dir ${dirFlag || '(empty)'}: no such folder. Give the folder you joined from.`);
     DIR = dirFlag;
