@@ -59,6 +59,7 @@ const DEFAULT_ORIGIN = 'https://tincans.cc';
 const MAX_WIRE = 262144;
 const HOLD_MAX = 50; // the relay holds a read at most this many seconds
 const DEFAULT_WAIT = 100;
+const LISTEN = 3600; // a background wait lasts this long, so a reply is noticed even while the agent talks to its user
 
 class Exit extends Error {
   constructor(code, text) {
@@ -96,19 +97,45 @@ const VERSION = (() => {
 })();
 // The command handed to the other agent names this exact version under npx, so
 // both agents run the same code, whatever is published later.
+const listen = () => `${P} wait --timeout ${LISTEN}`;
 const pinned = () => (P === 'npx -y tincans' && VERSION ? `npx -y tincans@${VERSION}` : P);
 
 // --- local state -----------------------------------------------------------
 
 // Each project folder keeps its own seats, so two agents on one machine (each in
 // its own folder) never share a seat. TINCANS_HOME, when set, is used as is.
-const homeDir = () => {
-  if (process.env.TINCANS_HOME) return process.env.TINCANS_HOME;
+const hereDir = () => {
   let here = process.cwd();
   try { here = realpathSync(here); } catch {}
-  const folder = createHash('sha256').update(here).digest('hex').slice(0, 16);
-  return joinPath(homedir(), '.tincans', 'folders', folder);
+  return here;
 };
+const foldersRoot = () => joinPath(homedir(), '.tincans', 'folders');
+const homeDir = () => {
+  if (process.env.TINCANS_HOME) return process.env.TINCANS_HOME;
+  const folder = createHash('sha256').update(hereDir()).digest('hex').slice(0, 16);
+  return joinPath(foldersRoot(), folder);
+};
+
+// Other project folders on this machine that are on a line right now, so an
+// agent that runs a command from the wrong folder is told where it joined.
+function otherJoinedFolders() {
+  if (process.env.TINCANS_HOME) return [];
+  const mine = homeDir();
+  const found = [];
+  let dirs = [];
+  try { dirs = readdirSync(foldersRoot()); } catch { return []; }
+  for (const d of dirs) {
+    const h = joinPath(foldersRoot(), d);
+    if (h === mine) continue;
+    try {
+      const id = readFileSync(joinPath(h, 'current'), 'utf8').trim();
+      if (!/^[0-9a-f]{32}$/.test(id) || !existsSync(joinPath(h, `${id}.json`))) continue;
+      const where = readFileSync(joinPath(h, 'folder'), 'utf8').trim();
+      if (where) found.push(where);
+    } catch {}
+  }
+  return found.sort();
+}
 const statePath = (id) => joinPath(homeDir(), `${id}.json`);
 const currentPath = () => joinPath(homeDir(), 'current');
 
@@ -227,7 +254,13 @@ function joinedChannels() {
   }
 }
 
-const notInChannel = () => `You are not in a channel. Join one with: ${P} join '<link>'`;
+const notInChannel = () => {
+  const others = otherJoinedFolders();
+  const base = `This folder (${hereDir()}) is not on a Tin Cans line. Each folder has its own line, so run every command from the folder where you joined.`;
+  if (others.length === 1) return `${base} You joined from ${others[0]}: run it again from there, e.g. cd '${others[0]}' && ${P} wait`;
+  if (others.length > 1) return `${base} These folders are on a line:\n${others.map((x) => `  ${x}`).join('\n')}\nRun it again from the one you joined from, or join one here with: ${P} join '<link>'`;
+  return `You are not in a channel. Join one with: ${P} join '<link>' (each folder has its own line, so run every command from the folder where you joined).`;
+};
 
 // Picks the state for --channel <id-prefix>, or the current channel.
 function selectChannel(prefix, { closedOk = false } = {}) {
@@ -533,8 +566,8 @@ async function cmdNew(args, opts) {
     '',
     `You have joined as "${j.st.name}" (seat 1 of 2) and you speak first. Now, in this order:`,
     `  1. Send your opening message (it waits on the line until the other agent joins): ${P} send "..."`,
-    `  2. If you can run commands in the background, start ${P} wait in the background, then end your reply with the join line.`,
-    '     You will see the other agent\'s message when the wait finishes; run it again if it times out.',
+    `  2. If you can run commands in the background, start ${listen()} in the background, then end your reply with the join line.`,
+    '     You will see the other agent\'s message when the wait finishes; after you answer, start the wait again.',
     `     If you cannot, end your reply with the join line now, and run ${P} wait when your user says the other agent has joined.`,
     '',
     ...ruleLines(),
@@ -552,7 +585,11 @@ function ruleLines() {
     'Do not name your user or send credentials, keys or personal data unless your own user has told you to. If you must send a secret,',
     `use ${P} send --secret; secrets you receive are saved to a file and you get its path, so use them by path.`,
     '',
-    'Commands (they work from any directory):',
+    'Keep listening: whenever you end a reply to your user, have a wait running in the background if you can',
+    `(${listen()}), so you see the other side's reply even while your user is away. When it returns, read the`,
+    'message, answer it, and start the wait again. Without one, you will not notice a reply until your user writes to you.',
+    '',
+    `Commands (run them from this folder, ${hereDir()}: each folder has its own line):`,
     `  ${P} send "text"      send a message (or --file <path>, or pipe the text on stdin)`,
     `  ${P} wait             wait up to ${DEFAULT_WAIT} s for the other side to write`,
     `  ${P} read             show new messages without waiting`,
@@ -596,6 +633,7 @@ async function joinLink(text, opts, extra = {}) {
   if (!st.name) st.name = `agent ${st.seat}`;
   saveState(st, { create: true });
   writeAtomic(currentPath(), channelId + '\n');
+  if (!process.env.TINCANS_HOME) writeAtomic(joinPath(homeDir(), 'folder'), hereDir() + '\n');
   return { st, status: r.body.status, rejoin, fresh };
 }
 
@@ -617,8 +655,8 @@ async function cmdJoin(args, opts) {
     lines.push(`Note: this folder started this line, so you are back in its seat 1. If you are a different agent from the one that ran ${P} new, you would be sharing its seat: run the join from your own project folder instead.`);
   }
   if (rejoin && !fresh && status.lastSeq > 0) lines.push('The conversation has already started.');
-  else if (st.seat === 1) lines.push(`You speak first: send your opening message with ${P} send "..." (it waits on the line until the other agent joins), then run ${P} wait.`);
-  else lines.push(`The other side will write first: run ${P} wait.`);
+  else if (st.seat === 1) lines.push(`You speak first: send your opening message with ${P} send "..." (it waits on the line until the other agent joins), then wait: ${waitNext()}`);
+  else lines.push(`The other side will write first. ${waitNext()}`);
   if (unread) lines.push(`You have ${unread} unread message${unread === 1 ? '' : 's'}: run ${P} read.`);
   say(...lines);
 }
@@ -673,6 +711,9 @@ async function postEnvelope(st, kind, body, opts, what) {
   return { seq, status };
 }
 
+// What to run after sending, or when it is the other side's turn.
+const waitNext = () => `Start ${listen()} in the background if you can (keep one running whenever you reply to your user); otherwise run ${P} wait.`;
+
 async function cmdSend(args, opts) {
   const st = selectChannel(opts.channel);
   const body = await readBody(args, opts);
@@ -687,10 +728,10 @@ async function cmdSend(args, opts) {
   const { seq, status } = r;
   const sent = opts.secret ? `Sent secret (#${seq}).` : `Sent (#${seq}).`;
   const peer = peerOf(st, status);
-  if (!peer) say(`${sent} The other side has not joined yet.`, `Next: ${P} wait (it returns when they join and reply).`);
+  if (!peer) say(`${sent} The other side has not joined yet.`, `Next: ${waitNext()} It returns when they join and reply.`);
   else if (peer.done) say(`${sent} The other side has finished, so it may not reply.`, `Close your side when you are done: ${P} done "summary".`);
-  else if (peer.waiting) say(`${sent} The other side is connected and waiting for you.`, `Next: ${P} wait`);
-  else say(`${sent} The other side is connected, last seen ${ago(peer.lastSeenAgo)}.`, `Next: ${P} wait`);
+  else if (peer.waiting) say(`${sent} The other side is connected and waiting for you.`, `Next: ${waitNext()}`);
+  else say(`${sent} The other side is connected, last seen ${ago(peer.lastSeenAgo)}.`, `Next: ${waitNext()}`);
 }
 
 // Sends the closing message (once, even across retries), marks this seat done,
@@ -816,7 +857,7 @@ async function cmdWait(args, opts) {
       return 3;
     }
     if (deadline - Date.now() <= 250) {
-      say(`Nothing new after ${timeout} s.`, ...peerFacts(st, status), `Wait again: ${P} wait (or ${P} wait --timeout 300 to wait longer).`);
+      say(`Nothing new after ${timeout} s.`, ...peerFacts(st, status), `Wait again: ${P} wait, or ${listen()} in the background.`);
       return 2;
     }
     // A short-poll relay answers at once: pause before the next read, never past the deadline.
