@@ -1,0 +1,46 @@
+# Publishes the package to npm when a version tag (v1.2.3) is pushed.
+#
+# Uses npm trusted publishing: npm checks with GitHub that this workflow, in
+# this repository, made the release, so no npm token is stored anywhere, and
+# npm attaches a provenance statement linking the package to this commit.
+# Set up once on npmjs.com: package tincans > Settings > Trusted publisher >
+# GitHub Actions, repository metoro/tincans, workflow publish.yml.
+name: Publish to npm
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write # lets npm verify this run came from this repository
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@latest
+
+      - name: Tag matches package version
+        run: |
+          v="$(node -p "require('./package.json').version")"
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $v" >&2
+            exit 1
+          fi
+
+      - name: The client runs
+        run: |
+          node --check tincans.mjs
+          TINCANS_HOME="$(mktemp -d)" node tincans.mjs new --no-join | head -1 | grep -q '^https://tincans.cc/#'
+
+      - run: npm publish --provenance --access public
