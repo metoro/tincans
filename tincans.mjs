@@ -98,17 +98,22 @@ const VERSION = (() => {
 // Under npx, every command printed names this exact version (see commandPrefix), so
 // both agents run the same code from first command to last, whatever is published meanwhile.
 const listen = () => `${P} wait --timeout ${LISTEN}`;
-const pinned = () => P; // under npx, P already names this exact version
+let BASE_P = 'tincans'; // P without this agent's --dir: what the other agent is told to run
+const pinned = () => BASE_P; // under npx it names this exact version
 
 // --- local state -----------------------------------------------------------
 
 // Each project folder keeps its own seats, so two agents on one machine (each in
 // its own folder) never share a seat. TINCANS_HOME, when set, is used as is.
+// The folder that identifies this agent's seat: --dir or TINCANS_DIR when given,
+// else the current directory. Nothing is ever written into it.
+let DIR = null;
 const hereDir = () => {
-  let here = process.cwd();
+  let here = DIR || process.env.TINCANS_DIR || process.cwd();
   try { here = realpathSync(here); } catch {}
   return here;
 };
+const shellQuote = (x) => `'${String(x).replace(/'/g, `'\\''`)}'`;
 const foldersRoot = () => joinPath(homedir(), '.tincans', 'folders');
 const homeDir = () => {
   if (process.env.TINCANS_HOME) return process.env.TINCANS_HOME;
@@ -278,9 +283,10 @@ function joinedChannels() {
 const notInChannel = () => {
   const join = `${P} join '<link>'`;
   const n = otherRecentLines();
-  if (!n) return `You are not in a channel. Join one with: ${join} (each folder has its own line, so run every command from the folder where you joined).`;
+  if (!n) return `You are not in a channel. Join one with: ${join} (each folder has its own line, so run every command from the folder where you joined, or add --dir <that folder>).`;
   return [
-    'This folder is not on a Tin Cans line. Each folder has its own line, so commands only work from the folder where you joined.',
+    'This folder is not on a Tin Cans line. Each folder has its own line, so commands only work from the folder where you joined',
+    `(or with --dir <that folder>, e.g. ${P} --dir '<folder>' wait).`,
     `${n === 1 ? 'Another folder on this machine has a line' : `${n} other folders on this machine have lines`} in use. If you joined from another folder yourself, run the`,
     'command again from that folder. If not, those lines belong to other agents: leave them alone, and join a line here with:',
     `  ${join}`,
@@ -636,15 +642,18 @@ function ruleLines() {
     '',
     `Keep listening: whenever you end a reply to your user, keep ${listen()} running in the background if you can.`,
     'It returns when the other side writes (which may wake you up; that is expected). Answer, then start it again.',
+    `If you cannot run it in the background, wait in the foreground instead (${P} wait, ${DEFAULT_WAIT} s at a time).`,
     'Messages wait on the relay until read, so nothing is lost while no wait is running.',
     '',
-    `Run every command from this folder (${hereDir()}). Your seat and received secrets are kept in ${process.env.TINCANS_HOME ? homeDir() : '~/.tincans/folders/'}.`,
+    `Run every command from this folder (${hereDir()}), or add --dir with it. Nothing is written into this folder:`,
+    `it only identifies your seat, which is kept with received secrets in ${process.env.TINCANS_HOME ? homeDir() : '~/.tincans/folders/'}.`,
     `  ${P} send "text"      send a message (or --file <path>, or pipe the text on stdin). It is held if the other side`,
     '                         wrote something you have not read: read it, then send again (or add --anyway).',
     `  ${P} wait             wait up to ${DEFAULT_WAIT} s for the other side to write`,
     `  ${P} read             show new messages without waiting`,
     `  ${P} status           is the other side here, has it read your last message?`,
-    `  ${P} done "summary"   close your side. This can't be undone: first check no question to your user or the other agent is open.`,
+    `  ${P} done "summary"   close your side. The other side sees your summary and can still reply until it closes too.`,
+    "                         It can't be undone: first check no question to your user or the other agent is open.",
   ];
 }
 
@@ -980,14 +989,14 @@ async function cmdStatus(args, opts) {
 const CHANNEL = { type: 'string' };
 // Command table: add an entry here to add a command.
 const COMMANDS = {
-  new: { options: { relay: { type: 'string' }, name: { type: 'string' }, 'no-join': { type: 'boolean' } }, run: cmdNew },
-  join: { options: { name: { type: 'string' } }, run: cmdJoin },
-  send: { text: true, options: { file: { type: 'string' }, secret: { type: 'boolean' }, anyway: { type: 'boolean' }, channel: CHANNEL }, run: cmdSend },
-  wait: { options: { timeout: { type: 'string' }, channel: CHANNEL }, run: cmdWait },
-  read: { options: { channel: CHANNEL }, run: cmdRead },
-  status: { options: { channel: CHANNEL }, run: cmdStatus },
-  done: { text: true, options: { anyway: { type: 'boolean' }, channel: CHANNEL }, run: cmdDone },
-  log: { options: { save: { type: 'string' }, follow: { type: 'boolean' }, channel: CHANNEL }, run: cmdLog },
+  new: { options: { dir: { type: 'string' }, relay: { type: 'string' }, name: { type: 'string' }, 'no-join': { type: 'boolean' } }, run: cmdNew },
+  join: { options: { dir: { type: 'string' }, name: { type: 'string' } }, run: cmdJoin },
+  send: { text: true, options: { dir: { type: 'string' }, file: { type: 'string' }, secret: { type: 'boolean' }, anyway: { type: 'boolean' }, channel: CHANNEL }, run: cmdSend },
+  wait: { options: { dir: { type: 'string' }, timeout: { type: 'string' }, channel: CHANNEL }, run: cmdWait },
+  read: { options: { dir: { type: 'string' }, channel: CHANNEL }, run: cmdRead },
+  status: { options: { dir: { type: 'string' }, channel: CHANNEL }, run: cmdStatus },
+  done: { text: true, options: { dir: { type: 'string' }, anyway: { type: 'boolean' }, channel: CHANNEL }, run: cmdDone },
+  log: { options: { dir: { type: 'string' }, save: { type: 'string' }, follow: { type: 'boolean' }, channel: CHANNEL }, run: cmdLog },
 };
 
 const usage = () => [
@@ -1005,6 +1014,8 @@ const usage = () => [
   `  ${P} log [--save p] [--follow]   the whole conversation (secrets masked)`,
   '',
   'Channel commands take --channel <id-prefix> to pick one of several joined channels.',
+  'Each folder has its own line. --dir <folder> (before or after the command) or TINCANS_DIR uses that folder\'s line',
+  'instead of the current one; nothing is written into the folder.',
   'Text that is exactly an option (e.g. --file): put -- before it, or pipe it in.',
   'Messages are framed by lines with a random tag, new every time, that text inside a message cannot fake.',
   '',
@@ -1033,8 +1044,16 @@ function textAfterOptions(args, options) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  P = commandPrefix();
-  pruneTranscripts();
+  P = BASE_P = commandPrefix();
+  DIR = null;
+  // --dir <folder> may come before the command (it is then part of every command
+  // printed) or among the command's options.
+  argv = [...argv];
+  let dirFlag = null;
+  while (argv[0] === '--dir' || argv[0]?.startsWith('--dir=')) {
+    const a = argv.shift();
+    dirFlag = a.includes('=') ? a.slice(6) : argv.shift();
+  }
   const [name, ...rest] = argv;
   if (name === 'help' || name === '--help' || name === '-h') {
     say(usage());
@@ -1048,6 +1067,13 @@ export async function main(argv = process.argv.slice(2)) {
   } catch (e) {
     fail(1, `${e.message}\nText that starts with "-" goes after --, e.g. ${P} send -- "-1 is the answer".\n\n${usage()}`);
   }
+  dirFlag = parsed.values.dir ?? dirFlag;
+  if (dirFlag !== null) {
+    if (!dirFlag || !existsSync(dirFlag)) fail(1, `--dir ${dirFlag || '(empty)'}: no such folder. Give the folder you joined from.`);
+    DIR = dirFlag;
+    P = `${P} --dir ${shellQuote(hereDir())}`;
+  }
+  pruneTranscripts();
   return (await cmd.run(parsed.positionals, parsed.values)) ?? 0;
 }
 

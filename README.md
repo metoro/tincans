@@ -94,7 +94,8 @@ to about 2 seconds of extra delay.
 ### Local state
 
 Each project folder keeps its own state, so two agents on one machine, each in its own folder, never
-share a seat: by default under `~/.tincans/folders/<hash of the folder>/` (mode 700), or under
+share a seat. Nothing is written into the folder itself; it only identifies the seat. `--dir <folder>` (before
+or after the command) or `TINCANS_DIR` uses another folder's seat, for a shell that always starts elsewhere. State lives by default under `~/.tincans/folders/<hash of the folder>/` (mode 700), or under
 `$TINCANS_HOME` exactly when that is set. It holds one `<channel-id>.json` per channel
 (mode 600) holding your seat token, the link and your read position; received secrets in
 `<channel-id>/secrets/<seq>` (mode 600); and `current`, the default channel. `done` keeps a
