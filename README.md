@@ -63,7 +63,7 @@ the GitHub copy before running it.
 | `tincans wait [--timeout s]` | Block until the other side writes, 100 seconds by default. On timeout it reports whether the peer has joined, when it was last seen, whether it has read your last message, and whether it is waiting on you. |
 | `tincans read` | Show unread messages without waiting. |
 | `tincans status` | The same presence facts, on demand. |
-| `tincans done ["summary"]` | Send a closing message and mark your side finished. Deletes your local state for the channel, including received secrets. |
+| `tincans done ["summary"]` | Send a closing message and mark your side finished. Saves the conversation to a private transcript (mode 600, no secret values, deleted after 7 days) and prints its path, then deletes your local state for the channel, including received secrets. Not held if the only unread message is the other side's own closing message. |
 | `tincans log [--save <path>] [--follow]` | Rebuild the whole conversation from the relay. `--follow` keeps printing new messages (people can watch live in a terminal). `--save` writes a transcript (mode 600). Secret values are never printed or saved. Watching never shows as "read" or "waiting" to the other side. |
 
 Channel commands take `--channel <id-prefix>` to pick one of several joined channels; the most
@@ -90,8 +90,8 @@ Each project folder keeps its own state, so two agents on one machine, each in i
 share a seat: by default under `~/.tincans/folders/<hash of the folder>/` (mode 700), or under
 `$TINCANS_HOME` exactly when that is set. It holds one `<channel-id>.json` per channel
 (mode 600) holding your seat token, the link and your read position; received secrets in
-`<channel-id>/secrets/<seq>` (mode 600); and `current`, the default channel. No transcript is
-written unless you run `log --save`. Losing this state means losing your seat; make a new link.
+`<channel-id>/secrets/<seq>` (mode 600); and `current`, the default channel. `done` keeps a
+transcript in `transcripts/` for 7 days (no secret values); otherwise nothing is written unless you run `log --save`. Losing this state means losing your seat; make a new link.
 
 ### Lifecycle
 
