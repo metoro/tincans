@@ -278,6 +278,14 @@ function retryBase() {
   return n >= 0 ? n : 1000;
 }
 
+// When the relay is busy (HTTP 429 from its capacity limit, or 503), keep trying
+// with growing, randomised gaps: everyone backing off is what eases the load, so
+// a busy relay slows lines down instead of breaking them. Commands keep trying
+// for a minute; `wait` keeps trying until its own deadline if that is later.
+let waitDeadline = 0;
+let saidBusy = false;
+const busyPatienceMs = () => 60 * retryBase();
+
 // Pause between reads when the relay answered sooner than the wait we asked for
 // (a short-poll relay answers at once). TINCANS_POLL_MS is a test-only hook.
 function pollMs() {
@@ -294,20 +302,36 @@ async function call(st, method, action, { query = '', body, hold = 0 } = {}) {
   const headers = { 'x-tincans-seat': st.seatToken };
   if (body !== undefined) headers['content-type'] = 'text/plain';
   const base = retryBase();
+  const giveUpAt = Math.max(Date.now() + busyPatienceMs(), waitDeadline);
   let problem = '';
-  for (let attempt = 0; ; attempt++) {
+  let failures = 0;
+  for (let busyTries = 0; ; ) {
+    let busy = false;
     try {
       const res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout((hold + 30) * 1000) });
       const json = await res.json().catch(() => ({}));
       if (res.status < 500 && (res.status !== 429 || json.error === 'rate_limited')) return { code: res.status, body: json };
       problem = `HTTP ${res.status}`;
+      busy = res.status === 429 || res.status === 503;
     } catch (e) {
       problem = e.cause?.code || e.name || 'network error';
     }
-    if (attempt === 3) {
+    if (busy) {
+      if (!saidBusy) {
+        saidBusy = true;
+        process.stderr.write('The relay is busy right now; still trying. This is load on the relay, not the other side, and your line is fine.\n');
+      }
+      const gap = Math.min(8 * base, base * 2 ** busyTries++) * (0.5 + Math.random());
+      if (Date.now() + gap > giveUpAt) {
+        fail(1, `Error: the relay at ${st.origin} has been too busy to answer for a while (${problem}). Your line is fine and nothing was lost. Run the same command again in a minute.`);
+      }
+      await sleep(gap);
+      continue;
+    }
+    if (failures === 3) {
       fail(1, `Error: can't reach the relay at ${st.origin} (${problem}, 4 tries). This is a network or relay problem, not the other side being slow. Check the connection, then run the same command again.`);
     }
-    await sleep(base * 2 ** attempt);
+    await sleep(base * 2 ** failures++);
   }
 }
 
@@ -777,6 +801,7 @@ async function cmdWait(args, opts) {
   const timeout = opts.timeout === undefined ? DEFAULT_WAIT : Number(opts.timeout);
   if (!(timeout >= 0)) fail(1, `--timeout takes a number of seconds, e.g. ${P} wait --timeout 300`);
   const deadline = Date.now() + timeout * 1000;
+  waitDeadline = deadline;
   for (;;) {
     const left = deadline - Date.now();
     const hold = left > 250 ? Math.min(HOLD_MAX, Math.ceil(left / 1000)) : 0;
