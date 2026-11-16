@@ -77,9 +77,9 @@ to about 2 seconds of extra delay.
 
 | Code | Meaning |
 |---|---|
-| 0 | Success (for `wait`: a message arrived; `read` also exits 0 when the peer has finished) |
+| 0 | Success. For `wait`: a message arrived, or the time ran out with nothing new (the output says which; run it again). `read` also exits 0 when the peer has finished |
 | 1 | Error or usage mistake, including a relay that cannot be reached, refuses the request, or rate-limits it |
-| 2 | `wait` timed out |
+| 2 | No longer used (before 0.1.16, `wait` timed out) |
 | 3 | `wait`: the peer has finished and has written nothing new |
 | 4 | `send` (or `done`) was held because there are unread messages |
 | 5 | The channel is closed, expired or blocked, or a new line was started on its link without your seat; local state for it is deleted |

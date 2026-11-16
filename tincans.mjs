@@ -858,7 +858,7 @@ async function cmdWait(args, opts) {
     }
     if (deadline - Date.now() <= 250) {
       say(`Nothing new after ${timeout} s.`, ...peerFacts(st, status), `Wait again: ${P} wait, or ${listen()} in the background.`);
-      return 2;
+      return 0; // a quiet spell is not a failure: tools would report a non-zero exit as one
     }
     // A short-poll relay answers at once: pause before the next read, never past the deadline.
     if (Date.now() - asked < hold * 1000) await sleep(Math.min(pollMs(), deadline - Date.now()));
@@ -895,11 +895,11 @@ const CHANNEL = { type: 'string' };
 const COMMANDS = {
   new: { options: { relay: { type: 'string' }, name: { type: 'string' }, 'no-join': { type: 'boolean' } }, run: cmdNew },
   join: { options: { name: { type: 'string' } }, run: cmdJoin },
-  send: { options: { file: { type: 'string' }, secret: { type: 'boolean' }, anyway: { type: 'boolean' }, channel: CHANNEL }, run: cmdSend },
+  send: { text: true, options: { file: { type: 'string' }, secret: { type: 'boolean' }, anyway: { type: 'boolean' }, channel: CHANNEL }, run: cmdSend },
   wait: { options: { timeout: { type: 'string' }, channel: CHANNEL }, run: cmdWait },
   read: { options: { channel: CHANNEL }, run: cmdRead },
   status: { options: { channel: CHANNEL }, run: cmdStatus },
-  done: { options: { anyway: { type: 'boolean' }, channel: CHANNEL }, run: cmdDone },
+  done: { text: true, options: { anyway: { type: 'boolean' }, channel: CHANNEL }, run: cmdDone },
   log: { options: { save: { type: 'string' }, follow: { type: 'boolean' }, channel: CHANNEL }, run: cmdLog },
 };
 
@@ -919,6 +919,24 @@ const usage = () => [
   'Channel commands take --channel <id-prefix> to pick one of several joined channels.',
 ].join('\n');
 
+// For commands that take text (send, done), the first word that starts with "-"
+// but is not one of their options begins the text: "--secret works" or "-1" is
+// sent as written instead of being refused as an unknown option.
+function textAfterOptions(args, options) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') return [...out, ...args.slice(i)];
+    if (!a.startsWith('-') || a === '-') { out.push(a); continue; }
+    const name = a.startsWith('--') ? a.slice(2).split('=')[0] : null;
+    const opt = name !== null && Object.hasOwn(options, name) ? options[name] : null;
+    if (!opt || (opt.type === 'boolean' && a.includes('='))) return [...out, '--', ...args.slice(i)];
+    out.push(a);
+    if (opt.type === 'string' && !a.includes('=') && i + 1 < args.length) out.push(args[++i]);
+  }
+  return out;
+}
+
 export async function main(argv = process.argv.slice(2)) {
   P = commandPrefix();
   const [name, ...rest] = argv;
@@ -930,7 +948,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (!cmd) fail(1, `${name ? `Unknown command "${name}".` : 'No command given.'}\n\n${usage()}`);
   let parsed;
   try {
-    parsed = parseArgs({ args: rest, options: cmd.options, allowPositionals: true, strict: true });
+    parsed = parseArgs({ args: cmd.text ? textAfterOptions(rest, cmd.options) : rest, options: cmd.options, allowPositionals: true, strict: true });
   } catch (e) {
     fail(1, `${e.message}\nText that starts with "-" goes after --, e.g. ${P} send -- "-1 is the answer".\n\n${usage()}`);
   }
