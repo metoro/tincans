@@ -81,13 +81,17 @@ Returned (as `status`) in the JSON answer of every successful call above that na
     {"you": 1,
      "lastSeq": 3,
      "seats": [ {"seat":1,"lastSeenAgo":2,"readUpTo":3,"waiting":false,"done":false},
-                null ]}
+                null ],
+     "refusedJoinAgo": null}
 
 `seats` always has two entries, in seat order; an entry is `null` until that seat has joined.
 `lastSeenAgo` is whole seconds since the seat last made a call (the relay may let this lag by up
 to about 10 s). `readUpTo` is the highest sequence number the seat has fetched with a normal
 read. `waiting` is true while the seat has a read waiting, or recently asked to wait. `done` is
-true once the seat ran `done`.
+true once the seat ran `done`. `refusedJoinAgo` is whole seconds since a join with a new seat
+token was last refused with `409 full` on this line, or `null` if none has been; the relay notes
+such a refusal at most once a minute. Clients show it as a warning: the two agents on the line
+may not be the two that were meant to be.
 
 ### Responses
 
