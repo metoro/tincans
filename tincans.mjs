@@ -59,6 +59,7 @@ const DEFAULT_ORIGIN = 'https://tincans.cc';
 const MAX_WIRE = 262144;
 const HOLD_MAX = 50; // the relay holds a read at most this many seconds
 const DEFAULT_WAIT = 100;
+const MAX_WAIT_S = 86400;
 const LISTEN = 3600; // a background wait lasts this long, so a reply is noticed even while the agent talks to its user
 
 class Exit extends Error {
@@ -407,6 +408,16 @@ function pollMs() {
   return n >= 0 ? n : 2000;
 }
 
+// How long a wait pauses between polls of a short-poll relay, by how long it has
+// waited so far: brisk while a conversation is moving, slower on a quiet line, so a
+// long background wait costs the relay a tenth as much. A new message ends the wait,
+// and the next wait starts brisk again. TINCANS_POLL_MS (tests) fixes it.
+const POLL_STEPS = [[60000, 2000], [120000, 5000], [300000, 15000], [Infinity, 30000]];
+export function pollGapMs(waitedMs) {
+  if (process.env.TINCANS_POLL_MS) return pollMs();
+  return POLL_STEPS.find(([until]) => waitedMs < until)[1];
+}
+
 // One request with 3 retries on connection errors, 5xx and 429. Returns {code, body}.
 // A 429 rate_limited from the relay's abuse limits is returned at once: retrying
 // would not help before its retryAfterS.
@@ -422,6 +433,8 @@ async function call(st, method, action, { query = '', body, hold = 0 } = {}) {
     let busy = false;
     try {
       const res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout((hold + 30) * 1000) });
+      // Only joins and reads carry the push header (a send's answer never does).
+      if (res.status === 200 && (action === 'join' || (action === 'messages' && method === 'GET'))) notePushUrl(st, res.headers.get('x-tincans-push'));
       const json = await res.json().catch(() => ({}));
       if (res.status < 500 && (res.status !== 429 || json.error === 'rate_limited')) return { code: res.status, body: json };
       problem = `HTTP ${res.status}`;
@@ -446,6 +459,134 @@ async function call(st, method, action, { query = '', body, hold = 0 } = {}) {
     }
     await sleep(base * 2 ** failures++);
   }
+}
+
+// --- push ----------------------------------------------------------------------
+// A relay that offers push says where in the x-tincans-push header (wss://, or ws://
+// for a local relay). A wait then subscribes over a WebSocket and sleeps until the
+// relay nudges it, instead of polling. Nudges carry no content: the client reads as
+// usual. Anything unexpected falls back to polling. Node 22+ has WebSocket built in;
+// on Node 20, or with TINCANS_PUSH=0, waits poll.
+// The address is kept in the seat's state (st.pushUrl, saved with it), so a wait can
+// go straight to push without a read first. A join or read answered without the
+// header means the relay no longer offers push.
+let pushUrl = null;
+let pushFailed = false; // push did not work in this process: poll
+function notePushUrl(st, v) {
+  let url = null;
+  try {
+    const u = new URL(v);
+    if (u.protocol === 'wss:' || (u.protocol === 'ws:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname))) url = u.href;
+  } catch {}
+  pushUrl = url;
+  st.pushUrl = url || undefined;
+}
+const canPush = (st) => {
+  pushUrl ??= st.pushUrl || null;
+  return Boolean(!pushFailed && pushUrl && typeof globalThis.WebSocket === 'function' && process.env.TINCANS_PUSH !== '0');
+};
+
+const PUSH_PING_MS = 4 * 60 * 1000; // API Gateway drops a WebSocket idle for 10 min
+const PUSH_CONNECT_MS = 10000;
+const PUSH_RECONNECTS = 5;
+const MAX_TIMER_MS = 2 ** 31 - 1; // setTimeout's limit (about 24.8 days)
+
+// Waits for the other side by push until the deadline. Returns {incoming, status}
+// when there is something to show (or the other side finished), {status} when the
+// time ran out, or null to fall back to polling.
+async function pushWait(st, deadline) {
+  for (let attempt = 0; attempt <= PUSH_RECONNECTS && Date.now() < deadline; attempt++) {
+    const r = await pushSession(st, deadline);
+    if (r.result) return r.result;
+    if (!r.reconnect) return null;
+    await sleep(Math.min(1000 * 2 ** attempt, Math.max(0, deadline - Date.now())));
+  }
+  if (Date.now() >= deadline) return pull(st, 0); // a last read: anything it finds is shown
+  return null;
+}
+
+// One WebSocket connection: subscribe, catch up, then read on each nudge.
+// Resolves {result} (something to show, or the time is up), {reconnect: true}
+// (dropped after subscribing), or {} (could not subscribe, or another wait took
+// over this seat: fall back). Every outcome is decided on one queue, after any read
+// in progress, so a read's messages are never fetched and then dropped: pull()
+// moves the cursor, so whatever it returns must reach the caller.
+function pushSession(st, deadline) {
+  return new Promise((resolve) => {
+    let ws;
+    let subscribed = false;
+    let finished = false;
+    let queue = Promise.resolve();
+    const timers = [];
+    const stop = () => {
+      for (const t of timers) clearTimeout(t), clearInterval(t);
+      try { ws?.close(); } catch {}
+    };
+    const settle = (value) => {
+      if (finished) return;
+      finished = true;
+      stop();
+      resolve(value);
+    };
+    // Queue a step; an error (e.g. the line closed) ends the session with it.
+    const step = (fn) => {
+      queue = queue.then(() => (finished ? undefined : fn())).catch((e) => settle({ error: e }));
+    };
+    const read = (always) => step(async () => {
+      const r = await pull(st, 0);
+      if (always || r.incoming.length || peerOf(st, r.status)?.done) settle({ result: r });
+    });
+    try {
+      ws = new WebSocket(pushUrl);
+    } catch {
+      resolve({});
+      return;
+    }
+    timers.push(setTimeout(() => step(() => { if (!subscribed) settle({}); }), PUSH_CONNECT_MS));
+    // At the deadline, one last read: whatever it finds is the result.
+    timers.push(setTimeout(() => read(true), Math.min(MAX_TIMER_MS, Math.max(0, deadline - Date.now()))));
+    ws.addEventListener('open', () => {
+      try { ws.send(JSON.stringify({ op: 'subscribe', channel: st.channelId, seat: st.seatToken })); } catch {}
+    });
+    ws.addEventListener('message', (ev) => {
+      let msg;
+      try { msg = JSON.parse(String(ev.data)); } catch { return; }
+      if (msg.op === 'subscribed' && !subscribed) {
+        subscribed = true;
+        timers.push(setInterval(() => { try { ws.send('{"op":"ping"}'); } catch {} }, PUSH_PING_MS));
+        read(false); // anything sent before the subscription
+      } else if (msg.op === 'new' || msg.op === 'done') {
+        read(false);
+      } else if (msg.op === 'replaced' || msg.op === 'error') {
+        step(() => settle({})); // another wait has this seat, or the relay refused: poll
+      }
+    });
+    ws.addEventListener('close', () => step(() => settle(subscribed ? { reconnect: true } : {})));
+    ws.addEventListener('error', () => {}); // a close always follows
+  }).then((v) => {
+    if (v.error) throw v.error;
+    return v;
+  });
+}
+
+// The push half of cmdWait: shows the outcome and returns the exit code, or null
+// if push did not work (the caller polls instead, and this process stops trying push).
+async function waitByPush(st, deadline, timeout) {
+  const pushed = await pushWait(st, deadline);
+  if (!pushed) { pushFailed = true; return null; }
+  saveState(st);
+  if (pushed.incoming.length) {
+    printMessages(pushed.incoming);
+    const w = refusalWarning(st, pushed.status);
+    if (w.length) say(...w);
+    return 0;
+  }
+  if (peerOf(st, pushed.status)?.done) {
+    say('The other side has finished (it ran done) and has written nothing new.', `Close your side with ${P} done "summary".`);
+    return 3;
+  }
+  say(`Nothing new after ${timeout} s.`, ...peerFacts(st, pushed.status), ...refusalWarning(st, pushed.status), `Wait again: ${P} wait, or ${listen()} in the background.`);
+  return 0;
 }
 
 // call() plus the answers every channel command handles the same way.
@@ -499,12 +640,14 @@ function openEnvelope(keys, m) {
 
 // Reads everything after the cursor (every page), advances the cursor past it,
 // and returns the peer's messages. Own messages are ingested without display.
-async function pull(st, hold = 0) {
+// next: when this client will poll again (s), so the relay keeps it shown as waiting until then.
+async function pull(st, hold = 0, { next = 0 } = {}) {
   const keys = keysOf(st);
   const incoming = [];
   let status;
   for (let wait = hold; ; wait = 0) {
-    const r = await api(st, 'GET', 'messages', { query: `?after=${st.cursor}&wait=${wait}`, hold: wait });
+    const nextQ = next > 0 && wait > 0 ? `&next=${next}` : '';
+    const r = await api(st, 'GET', 'messages', { query: `?after=${st.cursor}&wait=${wait}${nextQ}`, hold: wait });
     if (r.code !== 200) unexpected(r);
     status = r.body.status;
     for (const m of r.body.messages) {
@@ -991,13 +1134,22 @@ async function cmdWait(args, opts) {
   const st = selectChannel(opts.channel);
   const timeout = opts.timeout === undefined ? DEFAULT_WAIT : Number(opts.timeout);
   if (!(timeout >= 0)) fail(1, `--timeout takes a number of seconds, e.g. ${P} wait --timeout 300`);
+  if (timeout > MAX_WAIT_S) fail(1, `--timeout is at most ${MAX_WAIT_S} s (a line closes after 24 hours without a message).`);
   const deadline = Date.now() + timeout * 1000;
   waitDeadline = deadline;
+  const started = Date.now();
+  // A relay known to offer push: subscribe straight away (its catch-up read
+  // shows anything already waiting).
+  if (canPush(st)) {
+    const shown = await waitByPush(st, deadline, timeout);
+    if (shown !== null) return shown;
+  }
   for (;;) {
     const left = deadline - Date.now();
     const hold = left > 250 ? Math.min(HOLD_MAX, Math.ceil(left / 1000)) : 0;
+    const gap = pollGapMs(Date.now() - started);
     const asked = Date.now();
-    const { incoming, status } = await pull(st, hold);
+    const { incoming, status } = await pull(st, hold, { next: Math.ceil(gap / 1000) });
     if (incoming.length) {
       printMessages(incoming);
       const w = refusalWarning(st, status);
@@ -1012,8 +1164,13 @@ async function cmdWait(args, opts) {
       say(`Nothing new after ${timeout} s.`, ...peerFacts(st, status), ...refusalWarning(st, status), `Wait again: ${P} wait, or ${listen()} in the background.`);
       return 0; // a quiet spell is not a failure: tools would report a non-zero exit as one
     }
+    // Nothing yet: if this read revealed push, sleep until it nudges (or fall back).
+    if (canPush(st)) {
+      const shown = await waitByPush(st, deadline, timeout);
+      if (shown !== null) return shown;
+    }
     // A short-poll relay answers at once: pause before the next read, never past the deadline.
-    if (Date.now() - asked < hold * 1000) await sleep(Math.min(pollMs(), deadline - Date.now()));
+    if (Date.now() - asked < hold * 1000) await sleep(Math.min(gap, deadline - Date.now()));
   }
 }
 

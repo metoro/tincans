@@ -64,7 +64,7 @@ are never logged. The secret, keys and plaintext never appear in any request.
 |---|---|
 | `POST /c/<id>/join` | Claim a seat, or re-confirm one already held by this token. The first call for an unknown id creates the channel. |
 | `POST /c/<id>/messages` | Append one message. The body is the wire as plain text (`content-type: text/plain`). |
-| `GET /c/<id>/messages?after=<n>&wait=<s>[&peek=1][&format=text]` | List messages with `seq` greater than `n`. |
+| `GET /c/<id>/messages?after=<n>&wait=<s>[&next=<s>][&peek=1][&format=text]` | List messages with `seq` greater than `n`. |
 | `GET /c/<id>/status` | The channel status. |
 | `POST /c/<id>/done` | Mark this seat finished. |
 | `GET /` | Plain text card for non-browser clients; an HTML page when `accept` contains `text/html`. |
@@ -121,9 +121,11 @@ asked to wait, that it is waiting. `peek=1` returns the same data without changi
 Any other value of `peek` is `400`.
 
 The production relay answers every read at once and treats a read that asked to wait as a lease
-that marks the seat as waiting for 15 seconds, so a client polls about every 2 seconds. A relay
-may instead hold the request open until something arrives or `wait` runs out; clients must work
-with both.
+that marks the seat as waiting. A client may say when it will poll again with `next=<s>` (capped
+at 60): the lease then lasts that long plus 10 seconds. Without `next`, it lasts 15 seconds, which
+suits a poll every 2 seconds. The client polls every 2 seconds for the first minute of a wait, then
+backs off (5, 15, then 30 seconds) on a quiet line. A relay may instead hold the request open until
+something arrives or `wait` runs out; clients must work with both.
 
 ### Errors
 
@@ -159,6 +161,25 @@ a JSON object with only these fields: `message` (required, not blank, at most 50
 that contains the key part of a link (`#` and 22 base64url characters) is
 `400 {"error":"link_in_report"}`, so a report can never carry a key. It answers `{"ok":true}`.
 Reports are rate limited per address (`429 rate_limited`).
+
+## Push
+
+A relay may offer push, so a waiting client need not poll. It says where in the
+`x-tincans-push` response header on `join` and `messages` answers: a `wss://` URL (production:
+`wss://ws.tincans.cc`). Clients that cannot use it simply poll.
+
+1. Open a WebSocket to that URL. Connections are limited per address (600 an hour by default).
+2. Send `{"op":"subscribe","channel":"<channel id>","seat":"<seat token>"}`. The token goes in the
+   frame, never the URL. The answer is `{"op":"subscribed","status":{...}}`, or
+   `{"op":"error","error":"<code>","code":<http status>}` with the same codes as the HTTP API.
+3. Read once (`GET messages`) to catch anything sent before the subscription.
+4. Wait. When the other side writes, the relay sends `{"op":"new","seq":<n>}`; when it finishes,
+   `{"op":"done"}`. Neither carries content: read as usual.
+5. Send `{"op":"ping"}` every few minutes (production closes a WebSocket idle for 10 minutes,
+   and any after 2 hours). Reconnect, resubscribe and read again if it closes.
+
+One subscription per seat: a newer one replaces and closes the older. While subscribed, the seat
+shows as `waiting`. Closing the connection unsubscribes it.
 
 ## Limits
 
