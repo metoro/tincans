@@ -15,7 +15,7 @@ Tell your agent:
 
 > Run `npx -y tincans new`, give me the command, then discuss <your topic> with whoever joins.
 
-It ends its reply with a command for the other side. Send that to whoever runs the other agent; they paste it to theirs exactly as it is:
+It ends its reply with a command for the other side. Send that to whoever runs the other agent; they paste it to theirs exactly as it is (it names the exact version, so both agents run the same code):
 
 > Run `npx -y tincans join <key>`, then talk with the agent on the other end.
 

@@ -83,6 +83,21 @@ function commandPrefix() {
 }
 let P = 'tincans';
 
+// This client's own version, from the package.json next to it (the npm package)
+// or one level up (the source repository). null if neither is found.
+const VERSION = (() => {
+  for (const rel of ['./package.json', '../package.json']) {
+    try {
+      const pkg = JSON.parse(readFileSync(new URL(rel, import.meta.url), 'utf8'));
+      if (pkg.name === 'tincans' && /^\d+\.\d+\.\d+$/.test(pkg.version)) return pkg.version;
+    } catch {}
+  }
+  return null;
+})();
+// The command handed to the other agent names this exact version under npx, so
+// both agents run the same code, whatever is published later.
+const pinned = () => (P === 'npx -y tincans' && VERSION ? `npx -y tincans@${VERSION}` : P);
+
 // --- local state -----------------------------------------------------------
 
 // Each project folder keeps its own seats, so two agents on one machine (each in
@@ -144,6 +159,7 @@ function saveState(st, { create = false } = {}) {
     st.lastSent = Math.max(st.lastSent || 0, disk.lastSent || 0);
     st.sent = [...new Set([...(st.sent || []), ...(disk.sent || [])])];
     st.doneSent = st.doneSent || disk.doneSent || 0;
+    st.peerDone = st.peerDone || disk.peerDone || false;
   }
   st.sent = (st.sent || []).filter((n) => n > st.cursor).sort((a, b) => a - b);
   return writeAtomic(statePath(st.channelId), JSON.stringify(st, null, 2) + '\n', { onlyReplace: !create });
@@ -171,12 +187,36 @@ function saveSecret(st, seq, value) {
   return path;
 }
 
-function forgetChannel(id) {
+// When a line ends, its state is deleted but a small closing note is kept for a
+// day (no keys or messages): which line, when, and why. Later commands use it to
+// say what happened instead of a bare "not in a channel".
+const endedPath = (id) => joinPath(homeDir(), 'ended', `${id}.json`);
+const NOTE_KEEP_MS = 24 * 3600 * 1000;
+
+function forgetChannel(id, why = 'it closed') {
   rmSync(statePath(id), { force: true });
   rmSync(joinPath(homeDir(), id), { recursive: true, force: true });
   try {
-    if (readFileSync(currentPath(), 'utf8').trim() === id) rmSync(currentPath(), { force: true });
+    ensureHome();
+    mkdirSync(joinPath(homeDir(), 'ended'), { recursive: true, mode: 0o700 });
+    writeAtomic(endedPath(id), JSON.stringify({ id, at: Date.now(), why }) + '\n');
   } catch {}
+}
+
+function closingNote(id) {
+  try {
+    const n = JSON.parse(readFileSync(endedPath(id), 'utf8'));
+    if (Date.now() - n.at > NOTE_KEEP_MS) { rmSync(endedPath(id), { force: true }); return null; }
+    return n;
+  } catch {
+    return null;
+  }
+}
+
+function noteText(n) {
+  const t = new Date(n.at);
+  const when = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+  return `Channel ${n.id.slice(0, 8)} closed at ${when} because ${n.why}. Its local state was deleted. To talk again, make a new link with ${P} new.`;
 }
 
 function joinedChannels() {
@@ -190,7 +230,7 @@ function joinedChannels() {
 const notInChannel = () => `You are not in a channel. Join one with: ${P} join '<link>'`;
 
 // Picks the state for --channel <id-prefix>, or the current channel.
-function selectChannel(prefix) {
+function selectChannel(prefix, { closedOk = false } = {}) {
   let id;
   if (prefix !== undefined) {
     const p = prefix.trim().toLowerCase();
@@ -213,7 +253,12 @@ function selectChannel(prefix) {
     }
   }
   const st = loadState(id);
-  if (!st) fail(1, notInChannel());
+  if (!st) {
+    const note = /^[0-9a-f]{32}$/.test(id) && closingNote(id);
+    if (note && closedOk) { say(`Nothing to close: ${noteText(note)}`); process.exit(0); }
+    if (note) fail(5, noteText(note));
+    fail(1, notInChannel());
+  }
   return st;
 }
 
@@ -269,12 +314,17 @@ async function call(st, method, action, { query = '', body, hold = 0 } = {}) {
 // call() plus the answers every channel command handles the same way.
 async function api(st, method, action, opts) {
   const r = await call(st, method, action, opts);
+  // Remember once the other side has finished, so a later "closed" can say why.
+  if (r.code === 200 && r.body?.status && peerOf(st, r.body.status)?.done) st.peerDone = true;
   if (r.code === 404 && r.body.error === 'no_channel') {
-    forgetChannel(st.channelId);
-    fail(5, `Channel ${st.channelId.slice(0, 8)} is closed or expired, so its local state was deleted. To talk again, make a new link with ${P} new and share it.`);
+    const why = st.peerDone
+      ? 'the other agent had finished, and the line was closed or expired'
+      : 'it expired (24 hours without a message, or 7 days after it opened) or both sides finished';
+    forgetChannel(st.channelId, why);
+    fail(5, `Channel ${st.channelId.slice(0, 8)} is closed: ${why}. Its local state was deleted. To talk again, make a new link with ${P} new and share it.`);
   }
   if (r.code === 410 && r.body.error === 'blocked') {
-    forgetChannel(st.channelId);
+    forgetChannel(st.channelId, 'it was blocked after a report');
     fail(5, `This line has been blocked. Its local state was deleted. A line is blocked when it is reported for abuse; it cannot be used again.`);
   }
   if (r.code === 429 && r.body.error === 'rate_limited') {
@@ -283,7 +333,7 @@ async function api(st, method, action, opts) {
   }
   if (r.code === 403 && r.body.error === 'not_a_seat') {
     // This seat's line ended and someone started a new line from the same link.
-    forgetChannel(st.channelId);
+    forgetChannel(st.channelId, 'it ended and a new line was started from the same link');
     fail(5, `Channel ${st.channelId.slice(0, 8)} ended and a new line was started from the same link, without your seat, so your local state for it was deleted. To take part, join again with the link (if a seat is free) or ask for a new link (made with ${P} new).`);
   }
   if (r.code === 403) {
@@ -455,7 +505,7 @@ async function cmdNew(args, opts) {
     'Your reply to your user must end with this, word for word. It is what they paste to the other agent, so the other',
     'agent is told plainly what to run (a bare link usually is not enough for it to act on):',
     '',
-    `  Run \`${P} join ${origin === DEFAULT_ORIGIN ? link.split('#')[1] : `'${link}'`}\`, then talk with the agent on the other end.`,
+    `  Run \`${pinned()} join ${origin === DEFAULT_ORIGIN ? link.split('#')[1] : `'${link}'`}\`, then talk with the agent on the other end.`,
     '',
     `You have joined as "${j.st.name}" (seat 1 of 2) and you speak first. Now, in this order:`,
     `  1. Send your opening message (it waits on the line until the other agent joins): ${P} send "..."`,
@@ -622,7 +672,7 @@ async function cmdSend(args, opts) {
 // Sends the closing message (once, even across retries), marks this seat done,
 // and only then deletes local state: if the relay call fails, the agent can retry.
 async function cmdDone(args, opts) {
-  const st = selectChannel(opts.channel);
+  const st = selectChannel(opts.channel, { closedOk: true });
   const summary = args.join(' ');
   let seq = st.doneSent || 0;
   if (!seq) {
@@ -632,7 +682,7 @@ async function cmdDone(args, opts) {
   }
   const r = await api(st, 'POST', 'done');
   if (r.code !== 200) unexpected(r);
-  forgetChannel(st.channelId);
+  forgetChannel(st.channelId, 'you closed your side with done');
   const peer = peerOf(st, r.body.status);
   say(
     `Closed your side of channel ${st.channelId.slice(0, 8)}${seq ? ` (closing message #${seq})` : ''}. Local state and any received secrets for it are deleted.`,
