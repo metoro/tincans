@@ -99,6 +99,15 @@ const VERSION = (() => {
 // Under npx, every command printed names this exact version (see commandPrefix), so
 // both agents run the same code from first command to last, whatever is published meanwhile.
 const listen = () => `${P} wait --timeout ${LISTEN}`;
+
+// Once a seat is known, every command printed carries --seat <seat id>, so an
+// agent that copies a hint reaches its seat from whatever folder its shell is in
+// (many agents' shells start in the project folder for every command). Not with
+// --dir (already folder-proof) or TINCANS_HOME (one home, whatever the folder).
+function carrySeat(st) {
+  if (DIR || process.env.TINCANS_HOME || / --seat /.test(P)) return;
+  P = `${BASE_P} --seat ${seatIdOf(st)}`;
+}
 let BASE_P = 'tincans'; // P without this agent's --dir: what the other agent is told to run
 const pinned = () => BASE_P; // under npx it names this exact version
 
@@ -373,6 +382,7 @@ function selectChannel(prefix, { closedOk = false } = {}) {
     if (note) fail(5, noteText(note));
     fail(1, notInChannel());
   }
+  carrySeat(st);
   return st;
 }
 
@@ -486,7 +496,7 @@ const canPush = (st) => {
   return Boolean(!pushFailed && pushUrl && typeof globalThis.WebSocket === 'function' && process.env.TINCANS_PUSH !== '0');
 };
 
-const PUSH_PING_MS = 4 * 60 * 1000; // API Gateway drops a WebSocket idle for 10 min
+const PUSH_PING_MS = 8 * 60 * 1000; // API Gateway drops a WebSocket idle for 10 min (pings never reach Lambda)
 const PUSH_CONNECT_MS = 10000;
 const PUSH_RECONNECTS = 5;
 const MAX_TIMER_MS = 2 ** 31 - 1; // setTimeout's limit (about 24.8 days)
@@ -837,12 +847,10 @@ function ruleLines(st) {
     `If you cannot run it in the background, wait in the foreground instead (${P} wait, ${DEFAULT_WAIT} s at a time).`,
     'Messages wait on the relay until read, so nothing is lost while no wait is running.',
     '',
-    `Your seat is ${seatIdOf(st)}, tied to this folder: ${hereDir()}`,
-    `Nothing is written into the folder (your seat and received secrets are kept in ${process.env.TINCANS_HOME ? homeDir() : '~/.tincans/folders/'}).`,
-    ...(DIR ? [] : [
-      'If your shell starts in a different folder for each command, add --seat to every command instead of cd:',
-      `  ${BASE_P} --seat ${seatIdOf(st)} wait`,
-    ]),
+    ...(/ --seat /.test(P)
+      ? [`Your seat is ${seatIdOf(st)}. The commands below include --seat ${seatIdOf(st)}, so they work from any folder: copy them as they are.`]
+      : [`Your seat is ${seatIdOf(st)}.`]),
+    `Nothing is written into your folder (your seat and received secrets are kept in ${process.env.TINCANS_HOME ? homeDir() : '~/.tincans/folders/'}).`,
     '',
     'Commands:',
     `  ${P} send "text"      send a message (or --file <path>, or pipe the text on stdin). It is held if the other side`,
@@ -890,6 +898,7 @@ async function joinLink(text, opts, extra = {}) {
   if (!st.name) st.name = `agent ${st.seat}`;
   saveState(st, { create: true });
   writeAtomic(currentPath(), channelId + '\n');
+  carrySeat(st);
   return { st, status: r.body.status, rejoin, fresh };
 }
 
@@ -976,7 +985,7 @@ async function postEnvelope(st, kind, body, opts, what) {
 }
 
 // What to run after sending, or when it is the other side's turn.
-const waitNext = () => `Start ${listen()} in the background if you can (keep one running whenever you reply to your user); otherwise run ${P} wait.`;
+const waitNext = () => `Wait for the reply in the background: ${listen()} (or ${P} wait in the foreground).`;
 
 async function cmdSend(args, opts) {
   const st = selectChannel(opts.channel);

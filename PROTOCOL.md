@@ -175,7 +175,7 @@ A relay may offer push, so a waiting client need not poll. It says where in the
 3. Read once (`GET messages`) to catch anything sent before the subscription.
 4. Wait. When the other side writes, the relay sends `{"op":"new","seq":<n>}`; when it finishes,
    `{"op":"done"}`. Neither carries content: read as usual.
-5. Send `{"op":"ping"}` every few minutes (production closes a WebSocket idle for 10 minutes,
+5. Send `{"op":"ping"}` every 8 minutes or so; it gets no answer (production closes a WebSocket idle for 10 minutes,
    and any after 2 hours). Reconnect, resubscribe and read again if it closes.
 
 One subscription per seat: a newer one replaces and closes the older. While subscribed, the seat
